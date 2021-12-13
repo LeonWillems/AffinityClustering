@@ -120,6 +120,7 @@ def find_mst(E_list):
     vertices = {vertex for pair in E_list for vertex in pair[:2]}
 
     E_list = sorted(E_list, key=get_key)
+    print(E_list)
     connected_component = set()
     mst = []
     remove_edges = set()
@@ -312,6 +313,23 @@ def plot_mst(vertices, mst, intermediate=False, plot_cluster=False):
     plt.show()
     return
 
+def filter_edges_random(E, pc):
+    e_filtered = dict(E)
+    edges_to_remove = list()
+
+    for edge_list_key in E:
+        edge_list_per_vertex = E.get(edge_list_key)
+        for edge in edge_list_per_vertex:
+            edgeData = edge_list_per_vertex.get(edge)
+            random_number_gen = random.randrange(0, 100)
+            if random_number_gen < pc:
+                edges_to_remove.append((edge_list_key, edge, edgeData))
+
+    for edge in edges_to_remove:
+        e_filtered.get(edge[0]).pop(edge[1])
+
+    return e_filtered
+
 
 def main():
     """
@@ -337,7 +355,9 @@ def main():
         print("Start creating Distance Matrix...")
         dm, E, size, vertex_coordinates = create_distance_matrix(dataset[0])
 
-        print(E)
+        # print(E)
+        print("Start sampling of edges")
+        filter_edges_random(E, 10)
         """TODO: E processen aan de hand van wat we hebben besproken
         Ofwel, edges eruit flikkeren met een bepaald percentage,
         en dan een nieuwe E teruggeven die niet meer de 0 of 1
