@@ -65,7 +65,7 @@ def create_distance_matrix(dataset):
     """
     vertices = []
     size = 0
-    for line in dataset:
+    for line in dataset[0]:
         vertices.append([line[0], line[1]])
     d_matrix = scipy.spatial.distance_matrix(vertices, vertices, threshold=1000000)
     dict = {}
@@ -76,7 +76,13 @@ def create_distance_matrix(dataset):
         for j in range(i, len(d_matrix)):
             if i != j:
                 size += 1
-                dict2[j] = d_matrix[i][j]
+                if dataset[1][i] == dataset[1][j]:
+                    same_cluster = 1
+                else:
+                    same_cluster = 0
+
+                distance = d_matrix[i][j]
+                dict2[j] = (distance, same_cluster)
 
         dict[i] = dict2
     return d_matrix, dict, size, vertices
@@ -329,7 +335,30 @@ def main():
     for dataset in datasets:
         timestamp = datetime.now()
         print("Start creating Distance Matrix...")
-        dm, E, size, vertex_coordinates = create_distance_matrix(dataset[0][0])
+        dm, E, size, vertex_coordinates = create_distance_matrix(dataset[0])
+
+        print(E)
+        """TODO: E processen aan de hand van wat we hebben besproken
+        Ofwel, edges eruit flikkeren met een bepaald percentage,
+        en dan een nieuwe E teruggeven die niet meer de 0 of 1
+        bevat (geeft aan of ze in zelfde cluster zitten)
+
+        De oude data structure ziet eruit als volgt, en dit is 
+        wat we ook weer willen hebben om in de rest van de
+        functies te stoppen: (elke edge komt maar één keer voor)
+        E =
+        {0: {1: 0.8, 2: 1.4, ...},
+         1: {2: 0.7, 3: ...},
+         ...}
+        
+        Dit is de nieuwe data structure, of wel ipv de afstand,
+        een tuple met zowel de afstand als een indicator of ze
+        tot dezelfde cluster behoren
+        E =
+        {0: {1: (0.8, 1), 2: (1.4, 0), ...},
+         1: {2: (0.7, 1), 3: ...},
+         ...}"""
+
         V = list(range(len(dm)))
         print("Size dataset: ", len(dm))
         print("Created distance matrix in: ", datetime.now() - timestamp)
