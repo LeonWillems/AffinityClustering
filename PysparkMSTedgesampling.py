@@ -1,6 +1,7 @@
 import math
 from argparse import ArgumentParser
 from datetime import datetime
+import csv
 
 import numpy as np
 import random
@@ -12,49 +13,88 @@ from sklearn.datasets import make_circles, make_moons, make_blobs
 from pyspark import RDD, SparkConf, SparkContext
 
 
-# Snap stanford
 
 def get_clustering_data():
-    """
-    Retrieves all toy datasets from sklearn
-    :return: circles, moons, blobs datasets.
-    """
-    n_samples = 1500
-    noisy_circles = make_circles(n_samples=n_samples, factor=.5,
-                                 noise=.05)
-    noisy_moons = make_moons(n_samples=n_samples, noise=.05)
-    blobs = make_blobs(n_samples=n_samples, random_state=8)
-    no_structure = np.random.rand(n_samples, 2), None
+    n_samples = [150, 500, 1500]
+    noise_config = [0.0, 1.0, 'lines']
+    n_noise_points = 20
+    noise_clusters = [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0]
 
-    # Anisotropicly distributed data
-    random_state = 170
-    X, y = make_blobs(n_samples=n_samples, random_state=random_state)
-    transformation = [[0.6, -0.6], [-0.4, 0.8]]
-    X_aniso = np.dot(X, transformation)
-    aniso = (X_aniso, y)
+    datasets = []
 
-    # blobs with varied variances
-    varied = make_blobs(n_samples=n_samples,
-                        cluster_std=[1.0, 2.5, 0.5],
-                        random_state=random_state)
+    for n_sample in n_samples:
+        for noise in noise_config:
+            settings = ['blobs', n_sample, noise]
 
-    plt.figure(figsize=(9 * 2 + 3, 13))
-    plt.subplots_adjust(left=.02, right=.98, bottom=.001, top=.95, wspace=.05,
-                        hspace=.01)
+            if noise != 'lines':
+                cluster_stds = [std * (1 + noise) for std in [1.0, 2.0]]
+                blob_data = make_blobs(n_samples=n_sample,
+                                       cluster_std=cluster_stds,
+                                       centers=2)
 
-    datasets = [
-        (noisy_circles, {'damping': .77, 'preference': -240,
-                         'quantile': .2, 'n_clusters': 2,
-                         'min_samples': 20, 'xi': 0.25}),
-        (noisy_moons, {'damping': .75, 'preference': -220, 'n_clusters': 2}),
-        (varied, {'eps': .18, 'n_neighbors': 2,
-                  'min_samples': 5, 'xi': 0.035, 'min_cluster_size': .2}),
-        (aniso, {'eps': .15, 'n_neighbors': 2,
-                 'min_samples': 20, 'xi': 0.1, 'min_cluster_size': .2}),
-        (blobs, {}),
-        (no_structure, {})]
+                settings = ['blobs', n_sample, noise]
+                datasets.append([blob_data, settings])
+
+            if noise == 'lines':
+                blob_data = make_blobs(n_samples=n_sample,
+                                       cluster_std=[1.0, 2.0],
+                                       centers=2)
+
+                y_mean, x_min, x_max = blob_data[0][:, 1].mean(), blob_data[0][:, 0].min(), blob_data[0][:, 0].max()
+
+                noise_points = [[x_min + k * (x_max - x_min) / n_noise_points, y_mean] for k in
+                                range(n_noise_points)]
+
+                blob_data = (np.append(blob_data[0], noise_points, axis=0),
+                             np.append(blob_data[1], noise_clusters, axis=0))
+
+                datasets.append([blob_data, settings])
+
+    for n_sample in n_samples:
+        for noise in noise_config:
+            circle_settings = ['circles', n_sample, noise]
+            moon_settings = ['moons', n_sample, noise]
+
+            if noise != 'lines':
+                circle_data = make_circles(n_samples=n_sample,
+                                           noise=noise)
+
+                datasets.append([circle_data, circle_settings])
+
+                moon_data = make_moons(n_samples=n_sample,
+                                       noise=noise)
+
+                datasets.append([moon_data, moon_settings])
+
+            if noise == 'lines':
+                circle_data = make_circles(n_samples=n_sample,
+                                           noise=0.0)
+                moon_data = make_moons(n_samples=n_sample,
+                                       noise=0.0)
+
+                circle_y_mean, circle_x_min, circle_x_max = \
+                    circle_data[0][:, 1].mean(), circle_data[0][:, 0].min(), circle_data[0][:, 0].max()
+
+                moon_y_mean, moon_x_min, moon_x_max = \
+                    moon_data[0][:, 1].mean(), moon_data[0][:, 0].min(), moon_data[0][:, 0].max()
+
+                circle_noise_points = [
+                    [circle_x_min + k * (circle_x_max - circle_x_min) / n_noise_points, circle_y_mean]
+                    for k in range(n_noise_points)]
+                moon_noise_points = [[moon_x_min + k * (moon_x_max - moon_x_min) / n_noise_points, moon_y_mean]
+                                     for k in range(n_noise_points)]
+
+                circle_data = (np.append(circle_data[0], circle_noise_points, axis=0),
+                               np.append(circle_data[1], noise_clusters, axis=0))
+                moon_data = (np.append(moon_data[0], moon_noise_points, axis=0),
+                             np.append(moon_data[1], noise_clusters, axis=0))
+
+                datasets.append([circle_data, circle_settings])
+                datasets.append([moon_data, moon_settings])
 
     return datasets
+
+
 
 
 def create_distance_matrix(dataset):
@@ -68,10 +108,16 @@ def create_distance_matrix(dataset):
     for line in dataset[0]:
         vertices.append([line[0], line[1]])
     d_matrix = scipy.spatial.distance_matrix(vertices, vertices, threshold=1000000)
+    print('len d_matrix:', len(d_matrix))
     dict = {}
+
+    actual_clustering = []
+    for k in range(len(set(dataset[1]))):
+        actual_clustering.append([])
 
     # Run with less edges
     for i in range(len(d_matrix)):
+        actual_clustering[dataset[1][i]].append(i)
         dict2 = {}
         for j in range(i, len(d_matrix)):
             if i != j:
@@ -85,7 +131,7 @@ def create_distance_matrix(dataset):
                 dict2[j] = (distance, same_cluster)
 
         dict[i] = dict2
-    return d_matrix, dict, size, vertices
+    return d_matrix, dict, size, vertices, actual_clustering
 
 
 def partion_edges(E_list, k):
@@ -120,7 +166,7 @@ def find_mst(E_list):
     vertices = {vertex for pair in E_list for vertex in pair[:2]}
 
     E_list = sorted(E_list, key=get_key)
-    print(E_list)
+    #print(E_list)
     connected_component = set()
     mst = []
     remove_edges = set()
@@ -269,52 +315,135 @@ def create_mst(V, E, epsilon, size,
     return mst
 
 
-def plot_mst(vertices, mst, intermediate=False, plot_cluster=False):
+def plot_mst(vertices, mst, plot_cluster=True, num_clusters=2):
+    """
+    Plots the mst found
+    :param vertices: vertex coordinates
+    :param mst: minimal spanning tree to be plotted
+    :param intermediate: bool to indicate if intermediate results should be plotted
+    :param plot_cluster: bool to indicate if the clusters should have the same color
+    :param num_clusters: number of clusters
+    :return: nothing
+    """
     x = []
     y = []
+    z = []
     c = []
     area = []
-    colors = ["g", "b", "r", "c", "m", "y", "k", "darkorange", "dodgerblue", "deeppink", "khaki", "purple",
-              "springgreen", "tomato", "slategray"]
+    colors = ['b', 'r', 'g', 'c', 'm', 'y', 'k', 'darkorange', 'dodgerblue', 'deeppink', 'khaki', 'purple',
+              'springgreen', 'tomato', 'slategray']
+
     for i in range(len(vertices)):
         x.append(float(vertices[i][0]))
         y.append(float(vertices[i][1]))
+        if len(vertices[i]) == 3:
+            z.append(vertices[i][2])
         area.append(0.1)
-        c.append("black")
-    plt.scatter(x, y, c=c, s=area)
-    if intermediate:
-        cnt = 0
-        for m in mst:
-            for i in range(len(m)):
-                linex = [float(x[int(m[i][0])])]
-                liney = [float(y[int(m[i][0])])]
-                linex.append(float(x[int(m[i][1])]))
-                liney.append(float(y[int(m[i][1])]))
-                plt.plot(linex, liney, colors[cnt])
-            cnt = (cnt + 1) % len(colors)
-    else:
-        # TODO
-        if plot_cluster:
-            edges = sorted(mst, key=get_key, reverse=True)
-            total_length = 0
-            for edge in edges:
-                total_length += edge[2]
-            average_length = total_length / len(edges)
-            print(average_length)
-            print(edges[0], edges[1], edges[2], edges[3])
-            print("Not yet implemented")
+        c.append('k')
+
+
+    if plot_cluster:
+        edges = sorted(mst, key=get_key, reverse=True)
+        removed_edges = []
+        clusters = []
+        for i in range(num_clusters - 1):
+            edge = edges.pop(0)
+
+            removed_edges.append(edge)
+            clusters.append([edge[0]])
+            clusters.append([edge[1]])
+            linex = [float(x[edge[0]]), float(x[edge[1]])]
+            liney = [float(y[edge[0]]), float(y[edge[1]])]
+            """if len(z) > 0:
+                linez = [float(z[edge[0]]), float(z[edge[1]])]
+                #ax.plot(linex, liney, linez, "k")
+            else:
+                #plt.plot(linex, liney, "k")"""
+
+        dict_edges = dict()
+        for edge in edges:
+            if edge[0] in dict_edges:
+                dict_edges[edge[0]].append(edge[1])
+            else:
+                dict_edges[edge[0]] = [edge[1]]
+
+        i = 0
+        while i < len(clusters):
+            pop = False
+            for j in range(i):
+                if clusters[i][0] in clusters[j]:
+                    clusters.pop(i)
+                    pop = True
+                    break
+            if pop:
+                continue
+
+            todo = []
+            for j in range(clusters[i][0]):
+                if j in dict_edges:
+                    if clusters[i][0] in dict_edges[j]:
+                        clusters[i].append(j)
+                        todo.append(j)
+            if clusters[i][0] in dict_edges:
+                for j in range(len(dict_edges[clusters[i][0]])):
+                    todo.append(dict_edges[clusters[i][0]][j])
+                    clusters[i].append(dict_edges[clusters[i][0]][j])
+
+            while len(todo) > 0:
+                first = todo.pop()
+                for k in range(first):
+                    if k in dict_edges:
+                        if first in dict_edges[k] and k not in clusters[i]:
+                            clusters[i].append(k)
+                            todo.append(k)
+                if first in dict_edges:
+                    for k in range(len(dict_edges[first])):
+                        if dict_edges[first][k] not in clusters[i]:
+                            clusters[i].append(dict_edges[first][k])
+                            todo.append(dict_edges[first][k])
+            i += 1
+        for i in range(len(clusters)):
+            clusters[i] = sorted(clusters[i])
+
+        x_cluster = []
+        y_cluster = []
+        z_cluster = []
+        c_cluster = []
+        area_cluster = []
+
+        for i in range(len(clusters)):
+            for vertex in clusters[i]:
+                x_cluster.append(float(vertices[vertex][0]))
+                y_cluster.append(float(vertices[vertex][1]))
+                if len(z) > 0:
+                    z_cluster.append(float(vertices[vertex][2]))
+                area_cluster.append(0.2)
+                c_cluster.append(colors[i])
+        if len(z_cluster) > 0:
+            ax.scatter3D(x_cluster, y_cluster, z_cluster, c=c_cluster, s=area_cluster)
         else:
-            for i in range(len(mst)):
-                linex = [float(x[int(mst[i][0])])]
-                liney = [float(y[int(mst[i][0])])]
-                linex.append(float(x[int(mst[i][1])]))
-                liney.append(float(y[int(mst[i][1])]))
-                plt.plot(linex, liney)
-    plt.show()
-    return
+            plt.scatter(x_cluster, y_cluster, c=c_cluster, s=area_cluster)
+
+        linez = []
+        for i in range(len(mst)):
+            if mst[i] in removed_edges:
+                continue
+            linex = [float(x[int(mst[i][0])]), float(x[int(mst[i][1])])]
+            liney = [float(y[int(mst[i][0])]), float(y[int(mst[i][1])])]
+            if len(z) > 0:
+                linez = [float(z[int(mst[i][0])]), float(z[int(mst[i][1])])]
+            """for j in range(len(clusters)):
+                if mst[i][0] in clusters[j]:
+                    if len(z) > 0:
+                        #ax.plot3D(linex, liney, linez, c=colors[j])
+                    else:
+                        #plt.plot(linex, liney, c=colors[j])"""
+    #plt.show()
+
+    return clusters
 
 
-def filter_edges_random(E, pc, between_cluster):
+def filter_edges_random(E, pc, between_cluster, size):
     e_filtered = dict(E)
     edges_to_remove = list()
 
@@ -325,18 +454,19 @@ def filter_edges_random(E, pc, between_cluster):
             random_number_gen = random.randrange(0, 100)
             if between_cluster and random_number_gen < pc and edge_data[1] == 1:
                 edges_to_remove.append((edge_list_key, edge, edge_data))
-                print("Only removing edges in between clusters")
+                #print("Only removing edges in between clusters")
             elif (not between_cluster) and random_number_gen < pc:
-                print("Removing all edges randomly")
+                #print("Removing all edges randomly")
                 edges_to_remove.append((edge_list_key, edge, edge_data))
 
     for edge in edges_to_remove:
         e_filtered.get(edge[0]).pop(edge[1])
+        size -= 1
 
-    return e_filtered
+    return e_filtered, size
 
 
-def main():
+def main(percentage, between_cluster, i):
     """
     For every dataset, it creates the mst and plots the clustering
     """
@@ -355,51 +485,72 @@ def main():
     print("Starting time:", start_time)
 
     datasets = get_clustering_data()
+    print('n_datasets:', len(datasets))
+
+    dataset_counter = 1
     for dataset in datasets:
+        print(f'==================== Currently at configuration {(i-1)*27 + dataset_counter} of 270 ====================')
         timestamp = datetime.now()
         print("Start creating Distance Matrix...")
-        dm, E, size, vertex_coordinates = create_distance_matrix(dataset[0])
+        dm, E, size, vertex_coordinates, actual_clustering = create_distance_matrix(dataset[0])
 
-        # print(E)
         print("Start sampling of edges")
-        filter_edges_random(E, 10, False)
-        """TODO: E processen aan de hand van wat we hebben besproken
-        Ofwel, edges eruit flikkeren met een bepaald percentage,
-        en dan een nieuwe E teruggeven die niet meer de 0 of 1
-        bevat (geeft aan of ze in zelfde cluster zitten)
+        E_filtered, size = filter_edges_random(E, percentage, between_cluster, size)
 
-        De oude data structure ziet eruit als volgt, en dit is 
-        wat we ook weer willen hebben om in de rest van de
-        functies te stoppen: (elke edge komt maar één keer voor)
-        E =
-        {0: {1: 0.8, 2: 1.4, ...},
-         1: {2: 0.7, 3: ...},
-         ...}
-        
-        Dit is de nieuwe data structure, of wel ipv de afstand,
-        een tuple met zowel de afstand als een indicator of ze
-        tot dezelfde cluster behoren
-        E =
-        {0: {1: (0.8, 1), 2: (1.4, 0), ...},
-         1: {2: (0.7, 1), 3: ...},
-         ...}"""
+        E = {node: {neighbor: tup[0] for neighbor, tup in neighbors.items()}
+             for node, neighbors in E_filtered.items() if len(neighbors)>0}
 
-        V = list(range(len(dm)))
+        total_vertices = len(dm)
+        V = list(range(total_vertices))
         print("Size dataset: ", len(dm))
         print("Created distance matrix in: ", datetime.now() - timestamp)
         print("Start creating MST...")
         timestamp = datetime.now()
         mst = create_mst(V, E, epsilon=args.epsilon, size=size,
                          vertex_coordinates=vertex_coordinates)
-        print("Found MST in: ", datetime.now() - timestamp)
+
+        MST_found_in = datetime.now() - timestamp
+        print("Found MST in: ", MST_found_in.total_seconds())
         print("Start creating plot of MST...")
         timestamp = datetime.now()
-        plot_mst(dataset[0][0], mst, False, False)
+
+        predicted_clusters = plot_mst(dataset[0][0], mst, True)
+        print('actual clusters:', len(actual_clustering))
+        print('predic clusters:', len(predicted_clusters))
+
         print("Created plot of MST in: ", datetime.now() - timestamp)
+
+        substraction = 0
+        if total_vertices in [170, 520, 1520]:
+            substraction = 20
+
+        corrects = 0
+        for cluster in range(2):
+            for vertex in predicted_clusters[cluster][:int(total_vertices/2)-int(substraction/2)]:
+                if vertex in actual_clustering[cluster]:
+                    corrects += 1
+
+        if corrects < (total_vertices-substraction)/2:
+            corrects = total_vertices-substraction-corrects
+
+        perc_correct = corrects/(total_vertices-substraction)
+        print(f'{corrects} corrects out of {total_vertices-substraction} total, {perc_correct}')
+        print()
+
+        with open('experiment_results.csv', 'a', newline='\n') as csv_file:
+            csv_writer = csv.writer(csv_file, delimiter=',')
+
+            data_to_write = dataset[1] + [percentage, int(between_cluster),
+                                          perc_correct, MST_found_in.total_seconds()]
+            csv_writer.writerow(data_to_write)
+
+        dataset_counter += 1
+
+
 
     print("Done...")
 
 
 if __name__ == '__main__':
     # Initial call to main function
-    main()
+    main(0, False, 1)
